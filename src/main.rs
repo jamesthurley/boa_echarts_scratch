@@ -1,4 +1,4 @@
-use std::{cell::RefCell, collections::VecDeque, rc::Rc};
+use std::{cell::RefCell, collections::VecDeque, path::PathBuf, rc::Rc, str::FromStr};
 
 use boa_engine::{
     context::ContextBuilder,
@@ -67,15 +67,15 @@ fn main() -> anyhow::Result<()> {
     boa_runtime::register(&mut context, boa_runtime::RegisterOptions::new())
         .expect("should not fail while registering the runtime");
 
+    context.set_trace(false);
+
     let mut optimizer_options = OptimizerOptions::empty();
     optimizer_options.set(OptimizerOptions::STATISTICS, false);
     optimizer_options.set(OptimizerOptions::OPTIMIZE_ALL, false);
     context.set_optimizer_options(optimizer_options);
 
-    let script = include_str!("../test.js");
-
     let result = context
-        .eval(Source::from_bytes(script))
+        .eval(Source::from_filepath(&PathBuf::from_str("test.js").unwrap()).unwrap())
         .map_err(|e| anyhow::Error::msg(format!("Failed to run script\n{}", e)))?;
 
     context

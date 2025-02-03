@@ -85949,7 +85949,7 @@
   
   })));
 
-  input = {
+  var input = {
           "xAxis": {
             "type": "category",
             "data": [
@@ -85982,8 +85982,8 @@
         };
   
   
-  global = {};
-  setTimeout = () => { };
+  var global = {};
+  var setTimeout = () => { };
   
   
       var chart = echarts.init(

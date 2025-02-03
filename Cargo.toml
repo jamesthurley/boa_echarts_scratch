@@ -5,7 +5,11 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.95"
-boa_engine = { git = "https://github.com/boa-dev/boa", branch = "main", subdir = "core/engine" }
+boa_engine = { git = "https://github.com/boa-dev/boa", branch = "main", subdir = "core/engine", features = [
+    "deser",
+    "flowgraph",
+    "trace",
+] }
 boa_runtime = { git = "https://github.com/boa-dev/boa", branch = "main", subdir = "core/runtime" }
 pollster = "0.4.0"
 serde = { version = "1.0.217", features = ["serde_derive"] }
