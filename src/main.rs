@@ -2,59 +2,62 @@ use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 
 use boa_engine::{
     context::ContextBuilder,
-    job::{FutureJob, JobQueue, NativeJob},
+    job::{Job, JobExecutor, NativeAsyncJob, PromiseJob},
     module::SimpleModuleLoader,
     optimizer::OptimizerOptions,
-    Context, JsValue, Source,
+    Context, JsResult, Source,
 };
 
-use serde_json::json;
-
 #[derive(Default)]
-pub struct SimpleJobQueue(RefCell<VecDeque<NativeJob>>);
-
-impl std::fmt::Debug for SimpleJobQueue {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("SimpleQueue").field(&"..").finish()
-    }
+struct Executor {
+    promise_jobs: RefCell<VecDeque<PromiseJob>>,
+    async_jobs: RefCell<VecDeque<NativeAsyncJob>>,
 }
 
-impl SimpleJobQueue {
-    /// Creates an empty `SimpleJobQueue`.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-impl JobQueue for SimpleJobQueue {
-    fn enqueue_promise_job(&self, job: NativeJob, _: &mut Context) {
-        self.0.borrow_mut().push_back(job);
-    }
-
-    fn run_jobs(&self, context: &mut Context) {
-        let mut next_job = self.0.borrow_mut().pop_front();
-        while let Some(job) = next_job {
-            if job.call(context).is_err() {
-                self.0.borrow_mut().clear();
-                return;
-            };
-            next_job = self.0.borrow_mut().pop_front();
+impl JobExecutor for Executor {
+    fn enqueue_job(&self, job: Job, _: &mut Context) {
+        match job {
+            Job::PromiseJob(job) => self.promise_jobs.borrow_mut().push_back(job),
+            Job::AsyncJob(job) => self.async_jobs.borrow_mut().push_back(job),
+            job => eprintln!("unsupported job type {job:?}"),
         }
     }
 
-    fn enqueue_future_job(&self, future: FutureJob, context: &mut Context) {
-        let job = pollster::block_on(future);
-        self.enqueue_promise_job(job, context);
+    fn run_jobs(&self, context: &mut Context) -> JsResult<()> {
+        loop {
+            if self.promise_jobs.borrow().is_empty() && self.async_jobs.borrow().is_empty() {
+                return Ok(());
+            }
+
+            let jobs = std::mem::take(&mut *self.promise_jobs.borrow_mut());
+            for job in jobs {
+                if let Err(e) = job.call(context) {
+                    eprintln!("Uncaught {e}");
+                }
+            }
+
+            let async_jobs = std::mem::take(&mut *self.async_jobs.borrow_mut());
+            for async_job in async_jobs {
+                if let Err(err) = pollster::block_on(async_job.call(&RefCell::new(context))) {
+                    eprintln!("Uncaught {err}");
+                }
+                let jobs = std::mem::take(&mut *self.promise_jobs.borrow_mut());
+                for job in jobs {
+                    if let Err(e) = job.call(context) {
+                        eprintln!("Uncaught {e}");
+                    }
+                }
+            }
+        }
     }
 }
 
 fn main() -> anyhow::Result<()> {
-    let executor = Rc::new(SimpleJobQueue::default());
+    let executor = Rc::new(Executor::default());
     let loader = Rc::new(SimpleModuleLoader::new(".").map_err(|e| anyhow::anyhow!(e.to_string()))?);
 
     let mut context = ContextBuilder::new()
-        .job_queue(executor)
+        .job_executor(executor)
         .module_loader(loader.clone())
         .build()
         .map_err(|e| anyhow::anyhow!(e.to_string()))?;
@@ -69,42 +72,21 @@ fn main() -> anyhow::Result<()> {
     optimizer_options.set(OptimizerOptions::OPTIMIZE_ALL, false);
     context.set_optimizer_options(optimizer_options);
 
-    let script = get_script_complex();
+    let script = include_str!("../test.js");
 
     let result = context
         .eval(Source::from_bytes(script))
         .map_err(|e| anyhow::Error::msg(format!("Failed to run script\n{}", e)))?;
 
-    context.run_jobs();
+    context
+        .run_jobs()
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
-    let output = convert_output(&mut context, result)?;
+    let output = result
+        .to_json(&mut context)
+        .map_err(|e| anyhow::Error::msg(format!("Failed to convert output object.\n{}", e)))?;
 
     println!("{:#}", output);
 
     Ok(())
-}
-
-fn convert_output(
-    context: &mut Context,
-    last_result: JsValue,
-) -> anyhow::Result<serde_json::Value> {
-    match last_result {
-        JsValue::Undefined => Ok(json!(null)),
-        _ => last_result
-            .to_json(context)
-            .map_err(|e| anyhow::Error::msg(format!("Failed to convert output object.\n{}", e))),
-    }
-}
-
-// fn get_script_simple() -> &'static str {
-//     r##"
-//     x = {
-//       "hello": "world"
-//     };
-//     x;
-//     "##
-// }
-
-fn get_script_complex() -> &'static str {
-    include_str!("../test.js")
 }
